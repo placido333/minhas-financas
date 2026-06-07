@@ -133,6 +133,12 @@
   .movdate{flex:0 0 auto}
   .movnote{flex:1 1 220px;min-width:0}
   .movform .btn{height:48px}
+  .rate-refresh{border:1px solid var(--line);background:var(--surface);color:var(--emerald);width:24px;height:24px;border-radius:7px;cursor:pointer;font-size:14px;line-height:1;padding:0;vertical-align:middle;margin-left:2px;transition:.15s}
+  .rate-refresh:hover{border-color:var(--emerald);background:var(--emerald-soft)}
+  .rate-refresh.spin{animation:rspin .8s linear infinite}
+  @keyframes rspin{to{transform:rotate(360deg)}}
+  .txedit{border:none;background:none;color:#cfcabb;cursor:pointer;font-size:15px;line-height:1;padding:4px;border-radius:7px;transition:.12s}
+  .txedit:hover{color:var(--emerald);background:var(--emerald-soft)}
   .txamt{font-weight:700;font-size:15px;white-space:nowrap}
   .txdel{border:none;background:none;color:#cfcabb;cursor:pointer;font-size:18px;line-height:1;padding:4px;border-radius:7px;transition:.12s}
   .txdel:hover{color:var(--red);background:var(--terra-soft)}
@@ -250,7 +256,7 @@
     <div class="panel-head">
       <h2>Montante do meu dinheiro</h2>
       <div style="display:flex;align-items:center;gap:14px">
-        <span class="rangelabel">Cotação: <b>US$ 1 = R$ <span id="rateLabel">—</span></b></span>
+        <span class="rangelabel">Cotação: <b>US$ 1 = R$ <span id="rateLabel">—</span></b> <button class="rate-refresh" id="rateRefresh" type="button" title="Cotação automática — toque para atualizar">↻</button></span>
         <button class="ghost" id="editBalBtn" style="height:38px;padding:0 16px;font-size:13px">Editar saldos</button>
       </div>
     </div>
@@ -295,6 +301,7 @@
       <input id="movDate" type="date" class="movdate" title="Data da movimentação">
       <input id="movNote" class="movnote" autocomplete="off" placeholder="observação (opcional)">
       <button class="btn" id="movBtn">Registrar</button>
+      <button class="ghost" id="movCancelEdit" type="button" style="display:none;height:48px">Cancelar</button>
     </div>
     <div class="txlist" id="movList"></div>
   </div>
@@ -659,53 +666,85 @@ function render(){
 }
 
 /* ---------- aportes / entradas / resgates ---------- */
+let editingMovId = null;
 function livreRealAtual(){
   const spentBRL = transactions.filter(t=>currencyOf(t)==='BRL').reduce((s,t)=>s+t.amount,0);
   return balances.livreReal - spentBRL;
 }
 function fmtBRnum(n){ return n.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+// aplica (sign=+1) ou reverte (sign=-1) o efeito de um movimento no saldo
+function applyMovEffect(type, amount, sign){
+  const a = amount * sign;
+  if(type==='in_real')       balances.livreReal  += a;
+  else if(type==='in_dolar') balances.livreDolar += a;
+  else if(type==='invest'){  balances.livreReal  -= a; balances.investido += a; }
+  else if(type==='redeem'){  balances.investido  -= a; balances.livreReal += a; }
+}
+// avisa se faltar saldo (aporte sai do Livre R$; resgate sai do Investido). false = cancelar
+function validateMov(type, amount){
+  if(type==='invest'){
+    const livre = livreRealAtual();
+    if(amount > livre + 0.005 && !confirm(`Você tem R$ ${fmtBRnum(livre)} livres em Real. Investir R$ ${fmtBRnum(amount)} mesmo assim? O Livre em Real ficará negativo.`)) return false;
+  }
+  if(type==='redeem' && amount > balances.investido + 0.005
+     && !confirm(`Você tem R$ ${fmtBRnum(balances.investido)} investidos. Resgatar R$ ${fmtBRnum(amount)} mesmo assim? O Investido ficará negativo.`)) return false;
+  return true;
+}
+function resetMovForm(){
+  editingMovId = null;
+  $('movBtn').textContent = 'Registrar';
+  $('movCancelEdit').style.display = 'none';
+  $('movValue').value=''; $('movNote').value=''; $('movDate').value=toKey(new Date());
+}
+function startEditMovement(id){
+  const m = movements.find(x=>x.id===id); if(!m) return;
+  editingMovId = id;
+  $('movType').value = m.type;
+  $('movValue').value = fmtBRnum(m.amount);
+  $('movDate').value = m.date;
+  $('movNote').value = m.note || '';
+  $('movBtn').textContent = 'Salvar alteração';
+  $('movCancelEdit').style.display = '';
+  document.querySelector('.movform').scrollIntoView({block:'center'});
+  $('movValue').focus();
+}
 function addMovement(){
   const type = $('movType').value;
   const amount = parseAmount($('movValue').value);
   if(isNaN(amount) || amount<=0){ toast('Digite um valor válido'); $('movValue').focus(); return; }
   const dStr = $('movDate').value || toKey(new Date());
-  const now = new Date();
-  const time = pad(now.getHours())+':'+pad(now.getMinutes());
   const note = $('movNote').value.trim();
 
-  // valida a lógica: aporte sai do Livre em Real; resgate sai do Investido
-  if(type==='invest'){
-    const livre = livreRealAtual();
-    if(amount > livre + 0.005 && !confirm(`Você tem R$ ${fmtBRnum(livre)} livres em Real. Investir R$ ${fmtBRnum(amount)} mesmo assim? O Livre em Real ficará negativo.`)) return;
+  if(editingMovId){
+    const m = movements.find(x=>x.id===editingMovId);
+    if(!m){ resetMovForm(); return; }
+    applyMovEffect(m.type, m.amount, -1);          // reverte o efeito antigo
+    if(!validateMov(type, amount)){ applyMovEffect(m.type, m.amount, +1); return; } // cancelou: restaura
+    applyMovEffect(type, amount, +1);              // aplica o novo
+    m.type=type; m.amount=amount; m.date=dStr; m.note=note;
+    movements.sort((a,b)=>(b.date+b.time).localeCompare(a.date+a.time));
+    resetMovForm(); saveBal(); saveMov(); render(); toast('Movimentação atualizada');
+    return;
   }
-  if(type==='redeem'){
-    if(amount > balances.investido + 0.005 && !confirm(`Você tem R$ ${fmtBRnum(balances.investido)} investidos. Resgatar R$ ${fmtBRnum(amount)} mesmo assim? O Investido ficará negativo.`)) return;
-  }
-  // aplica no saldo
-  if(type==='in_real')       balances.livreReal  += amount;
-  else if(type==='in_dolar') balances.livreDolar += amount;
-  else if(type==='invest'){  balances.livreReal  -= amount; balances.investido += amount; }
-  else if(type==='redeem'){  balances.investido  -= amount; balances.livreReal += amount; }
 
+  if(!validateMov(type, amount)) return;
+  applyMovEffect(type, amount, +1);
+  const now = new Date();
   movements.push({
     id: Date.now()+'-'+Math.random().toString(36).slice(2,7),
-    type, amount, date: dStr, time, note, createdAt: new Date().toISOString()
+    type, amount, date: dStr, time: pad(now.getHours())+':'+pad(now.getMinutes()),
+    note, createdAt: new Date().toISOString()
   });
   movements.sort((a,b)=>(b.date+b.time).localeCompare(a.date+a.time));
-  saveBal(); saveMov();
-  $('movValue').value=''; $('movNote').value=''; $('movDate').value=toKey(new Date());
-  render();
-  toast('Movimentação registrada');
+  resetMovForm(); saveBal(); saveMov(); render(); toast('Movimentação registrada');
 }
 function deleteMovement(id){
   const m = movements.find(x=>x.id===id);
   if(!m) return;
   if(!confirm('Excluir esta movimentação? O saldo será ajustado de volta.')) return;
-  if(m.type==='in_real')       balances.livreReal  -= m.amount;
-  else if(m.type==='in_dolar') balances.livreDolar -= m.amount;
-  else if(m.type==='invest'){  balances.livreReal  += m.amount; balances.investido -= m.amount; }
-  else if(m.type==='redeem'){  balances.investido  += m.amount; balances.livreReal -= m.amount; }
+  applyMovEffect(m.type, m.amount, -1);
   movements = movements.filter(x=>x.id!==id);
+  if(editingMovId===id) resetMovForm();
   saveBal(); saveMov(); render(); toast('Movimentação excluída');
 }
 function renderMovements(){
@@ -721,21 +760,53 @@ function renderMovements(){
     const tagBg = meta.badge==='US$' ? '#E7EFF6' : '#F6EFD9';
     const tagFg = meta.badge==='US$' ? '#3E7CB1' : '#C99A2E';
     const tag = `<span style="background:${tagBg};color:${tagFg};font-weight:700;font-size:10px;padding:1px 6px;border-radius:6px;margin-left:6px">${meta.badge}</span>`;
-    return `<div class="tx">
+    const sel = m.id===editingMovId ? ' style="background:var(--emerald-soft);border-radius:11px"' : '';
+    return `<div class="tx"${sel}>
       <span class="txicon" style="background:${meta.color}">${meta.icon}</span>
       <div class="txmid"><div class="txcat">${meta.title}</div><div class="txdt">${fmtBR(m.date)} · ${m.time} · ${meta.desc}${tag}</div>${m.note?`<div class="txnote">${esc(m.note)}</div>`:''}</div>
       <span class="txamt num money" style="color:${meta.color}">${meta.sign}${val}</span>
+      <button class="txedit" data-id="${m.id}" title="Editar">✎</button>
       <button class="txdel" data-id="${m.id}" title="Excluir">×</button>
     </div>`;
   }).join('');
+  list.querySelectorAll('.txedit').forEach(b=>{ b.onclick=()=>startEditMovement(b.dataset.id); });
   list.querySelectorAll('.txdel').forEach(b=>{ b.onclick=()=>deleteMovement(b.dataset.id); });
+}
+
+/* ---------- cotação automática (live) ---------- */
+let liveRate = null, liveRateAt = null;
+function effectiveRate(){ return liveRate || balances.rate || 0; }
+async function fetchRate(manual){
+  const btn = $('rateRefresh'); if(btn && manual) btn.classList.add('spin');
+  let rate=null, src='';
+  try{
+    const r = await fetch('https://economia.awesomeapi.com.br/json/last/USD-BRL');
+    const j = await r.json();
+    const v = parseFloat(j.USDBRL && j.USDBRL.bid);
+    if(v>0){ rate=v; src='AwesomeAPI'; }
+  }catch(e){}
+  if(!rate){
+    try{
+      const r = await fetch('https://open.er-api.com/v6/latest/USD');
+      const j = await r.json();
+      const v = parseFloat(j.rates && j.rates.BRL);
+      if(v>0){ rate=v; src='er-api'; }
+    }catch(e){}
+  }
+  if(btn) btn.classList.remove('spin');
+  if(rate){
+    liveRate = rate; liveRateAt = new Date();
+    if(btn) btn.title = `Cotação automática (${src}) · atualizada ${liveRateAt.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})} — toque para atualizar`;
+    render();
+    if(manual) toast('Cotação atualizada: R$ '+fmtBRnum(rate));
+  }else if(manual){ toast('Não consegui atualizar a cotação agora'); }
 }
 
 /* ---------- wealth / patrimônio ---------- */
 function currencyOf(t){ return t.currency || 'BRL'; }
-function amtBRL(t){ return currencyOf(t)==='USD' ? t.amount*(balances.rate||0) : t.amount; }
+function amtBRL(t){ return currencyOf(t)==='USD' ? t.amount*effectiveRate() : t.amount; }
 function renderWealth(){
-  const rate = balances.rate || 0;
+  const rate = effectiveRate();
   $('rateLabel').textContent = (rate).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
 
   const spentBRL = transactions.filter(t=>currencyOf(t)==='BRL').reduce((s,t)=>s+t.amount,0);
@@ -958,6 +1029,8 @@ function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('sho
 $('addBtn').onclick=addExpenses;
 $('expInput').addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); addExpenses(); }});
 $('movBtn').onclick=addMovement;
+$('movCancelEdit').onclick=resetMovForm;
+$('rateRefresh').onclick=()=>fetchRate(true);
 $('movValue').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); addMovement(); }});
 $('movNote').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); addMovement(); }});
 $('tabs').querySelectorAll('button').forEach(b=>{
@@ -1061,6 +1134,8 @@ $('authForgot').onclick=async ()=>{
   applyPrivacy();
   updateSyncBtn();
   render();
+  fetchRate();                              // cotação automática ao abrir
+  setInterval(()=>fetchRate(), 300000);     // e a cada 5 minutos
 })();
 
 /* ---------- PWA: registra o service worker (só quando hospedado) ---------- */
