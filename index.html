@@ -123,6 +123,16 @@
   .txcat{font-weight:600;font-size:14.5px;text-transform:capitalize;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .txdt{color:var(--muted);font-size:12px;margin-top:2px}
   .txnote{color:var(--muted);font-size:12.5px;margin-top:3px;line-height:1.35;word-break:break-word}
+
+  /* Movimentações (aportes/entradas) */
+  .movform{display:flex;gap:10px;flex-wrap:wrap;align-items:stretch;margin-bottom:6px}
+  .movform select,.movform input{height:48px;border:1.5px solid var(--line);border-radius:12px;padding:0 13px;font-family:inherit;font-size:14.5px;color:var(--ink);background:var(--paper)}
+  .movform select:focus,.movform input:focus{outline:none;border-color:var(--emerald);background:#fff}
+  .movsel{flex:1 1 280px;min-width:0;cursor:pointer}
+  .movval{flex:1 1 150px;min-width:0}
+  .movdate{flex:0 0 auto}
+  .movnote{flex:1 1 220px;min-width:0}
+  .movform .btn{height:48px}
   .txamt{font-weight:700;font-size:15px;white-space:nowrap}
   .txdel{border:none;background:none;color:#cfcabb;cursor:pointer;font-size:18px;line-height:1;padding:4px;border-radius:7px;transition:.12s}
   .txdel:hover{color:var(--red);background:var(--terra-soft)}
@@ -262,12 +272,31 @@
         <div class="wfield"><label>Livre em Dólar (US$)</label><input id="inLivreD" inputmode="decimal" placeholder="0.00"></div>
         <div class="wfield"><label>Cotação US$ → R$</label><input id="inRate" inputmode="decimal" placeholder="5,17"></div>
       </div>
-      <div class="hint" style="margin-top:12px">Os saldos são o seu ponto de partida. A partir daí, cada gasto <b>R</b> reduz o Livre em Real e cada gasto <b>D</b> reduz o Livre em Dólar. O Investido só muda aqui.</div>
+      <div class="hint" style="margin-top:12px">Os saldos são o seu ponto de partida. A partir daí, cada gasto <b>R</b> reduz o Livre em Real e cada gasto <b>D</b> reduz o Livre em Dólar. O Investido muda aqui ou pelos <b>aportes</b> abaixo.</div>
       <div class="wedit-actions">
         <button class="linklike" id="cancelBalBtn">Cancelar</button>
         <button class="btn" id="saveBalBtn" style="height:44px;padding:0 22px">Salvar saldos</button>
       </div>
     </div>
+  </div>
+
+  <!-- Aportes, entradas e resgates -->
+  <div class="panel mb">
+    <div class="panel-head"><h2>Aportes e entradas</h2></div>
+    <div class="hint" style="margin:0 0 12px">Registre dinheiro que <b>entrou</b> no seu Livre, ou um <b>aporte</b> (tira do Livre em Real e coloca no Investido). Cada registro guarda a data. Para investir, o valor precisa estar antes no <b>Livre em Real</b>.</div>
+    <div class="movform">
+      <select id="movType" class="movsel">
+        <option value="in_real">Entrada · Livre em Real (R$)</option>
+        <option value="in_dolar">Entrada · Livre em Dólar (US$)</option>
+        <option value="invest">Aporte · investir (Livre R$ → Investido)</option>
+        <option value="redeem">Resgate · desinvestir (Investido → Livre R$)</option>
+      </select>
+      <input id="movValue" class="movval" inputmode="decimal" autocomplete="off" placeholder="valor (ex.: 1.000,00)">
+      <input id="movDate" type="date" class="movdate" title="Data da movimentação">
+      <input id="movNote" class="movnote" autocomplete="off" placeholder="observação (opcional)">
+      <button class="btn" id="movBtn">Registrar</button>
+    </div>
+    <div class="txlist" id="movList"></div>
   </div>
 
   <!-- Period selector -->
@@ -344,11 +373,20 @@
 <script>
 const STORE_KEY = 'pf_transactions_v1';
 const BAL_KEY = 'pf_balances_v1';
+const MOV_KEY = 'pf_movements_v1';
 const PRIV_KEY = 'pf_privacy_v1';
 const PALETTE = ['#1F6F5C','#D97742','#C99A2E','#3E7CB1','#9B5DE5','#E15554','#3BB273','#7768AE','#E8A33D','#557A95','#B5446E','#5C8001'];
 const W_COLORS = { invest:'#1F6F5C', livreR:'#C99A2E', livreD:'#3E7CB1' };
+// Tipos de movimentação (aportes / entradas / resgates)
+const MOV_META = {
+  in_real:  { title:'Entrada em Real',  color:'#3BB273', badge:'R$',  icon:'+', sign:'+ ', curr:'BRL', desc:'entrou no Livre em Real' },
+  in_dolar: { title:'Entrada em Dólar', color:'#3E7CB1', badge:'US$', icon:'+', sign:'+ ', curr:'USD', desc:'entrou no Livre em Dólar' },
+  invest:   { title:'Aporte',           color:'#C99A2E', badge:'R$',  icon:'↑', sign:'',   curr:'BRL', desc:'Livre em Real → Investido' },
+  redeem:   { title:'Resgate',          color:'#D97742', badge:'R$',  icon:'↓', sign:'',   curr:'BRL', desc:'Investido → Livre em Real' }
+};
 
 let transactions = [];
+let movements = [];
 let balances = { investido:0, livreReal:0, livreDolar:0, rate:5.17 };
 let period = 'month';
 let chartMode = 'day';
@@ -378,6 +416,10 @@ async function load(){
     const b = await storage.get(BAL_KEY);
     if(b && b.value) balances = Object.assign(balances, JSON.parse(b.value));
   }catch(e){}
+  try{
+    const mv = await storage.get(MOV_KEY);
+    movements = mv && mv.value ? JSON.parse(mv.value) : [];
+  }catch(e){ movements = []; }
 }
 async function save(){
   try{ await storage.set(STORE_KEY, JSON.stringify(transactions)); }
@@ -387,6 +429,11 @@ async function save(){
 async function saveBal(){
   try{ await storage.set(BAL_KEY, JSON.stringify(balances)); }
   catch(e){ toast('Não foi possível salvar saldos'); }
+  cloudPush();
+}
+async function saveMov(){
+  try{ await storage.set(MOV_KEY, JSON.stringify(movements)); }
+  catch(e){ toast('Não foi possível salvar a movimentação'); }
   cloudPush();
 }
 
@@ -405,14 +452,15 @@ function unionById(a, b){
   return [...map.values()];
 }
 function sortTx(arr){ return arr.sort((x,y)=> (y.date+y.time).localeCompare(x.date+x.time)); }
-function remoteSig(data){ return data ? JSON.stringify({t:data.transactions||[], b:data.balances||null}) : 'none'; }
+function remoteSig(data){ return data ? JSON.stringify({t:data.transactions||[], b:data.balances||null, m:data.movements||[]}) : 'none'; }
 function persistLocal(){
   storage.set(STORE_KEY, JSON.stringify(transactions));
   storage.set(BAL_KEY, JSON.stringify(balances));
+  storage.set(MOV_KEY, JSON.stringify(movements));
 }
 function cloudPush(){
   if(window.cloud && window.cloud.user && cloudReady){
-    window.cloud.push({ transactions, balances, updatedAt: new Date().toISOString() })
+    window.cloud.push({ transactions, balances, movements, updatedAt: new Date().toISOString() })
       .catch(()=>{ /* offline: o Firestore reenvia ao reconectar */ });
   }
 }
@@ -460,10 +508,13 @@ window.addEventListener('cloud-error', ()=>{ toast('Erro de sincronização. Ver
 window.addEventListener('cloud-data', (e)=>{
   const { exists, data, pending } = e.detail;
   const remoteTx = (exists && data && Array.isArray(data.transactions)) ? data.transactions : [];
+  const remoteMov = (exists && data && Array.isArray(data.movements)) ? data.movements : null;
   if(!initialMergeDone){
-    // 1ª vez após login: junta o que está aqui com o que está na nuvem (nada se perde)
+    // 1ª vez após login: junta os gastos (nada se perde). Saldos e movimentações
+    // da nuvem têm prioridade quando existem (ficam consistentes entre si).
     transactions = sortTx(unionById(transactions, remoteTx));
     if(exists && data && data.balances) balances = Object.assign({}, BAL_DEFAULT, data.balances);
+    if(remoteMov) movements = sortTx(remoteMov.slice());
     initialMergeDone = true; cloudReady = true;
     lastSig = remoteSig(data);
     persistLocal(); render();
@@ -476,16 +527,23 @@ window.addEventListener('cloud-data', (e)=>{
     lastSig = sig;
     transactions = sortTx(remoteTx.slice());
     if(exists && data && data.balances) balances = Object.assign({}, BAL_DEFAULT, data.balances);
+    if(remoteMov) movements = sortTx(remoteMov.slice());
     persistLocal(); render();
   }
 });
 
 /* ---------- parsing ---------- */
 function parseAmount(raw){
-  let s = raw.replace(/[^\d.,]/g,'').trim();
+  let s = String(raw==null?'':raw).replace(/[^\d.,]/g,'').trim();
   if(!s) return NaN;
-  if(s.includes(',')){ s = s.replace(/\./g,'').replace(',', '.'); }   // BR: 1.234,56
-  else if((s.match(/\./g)||[]).length>1){ s = s.replace(/\./g,''); }  // 1.234.567
+  if(s.includes(',')){
+    s = s.replace(/\./g,'').replace(',', '.');                 // BR: ponto = milhar, vírgula = decimal (1.234,56)
+  }else{
+    const dots = (s.match(/\./g)||[]).length;
+    const after = dots ? s.slice(s.lastIndexOf('.')+1) : '';
+    // ponto como milhar (30.000 / 1.234.567); só trata como decimal o caso US "101.5" / "101.50"
+    if(dots>1 || (dots===1 && after.length===3)) s = s.replace(/\./g,'');
+  }
   return parseFloat(s);
 }
 // Lê só o campo do valor: "1.234,56", "101,50R", "R$ 50", "25D"...
@@ -597,6 +655,80 @@ function render(){
   renderMainChart(inP, r);
   renderCategories(inP);
   renderTx(inP);
+  renderMovements();
+}
+
+/* ---------- aportes / entradas / resgates ---------- */
+function livreRealAtual(){
+  const spentBRL = transactions.filter(t=>currencyOf(t)==='BRL').reduce((s,t)=>s+t.amount,0);
+  return balances.livreReal - spentBRL;
+}
+function fmtBRnum(n){ return n.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function addMovement(){
+  const type = $('movType').value;
+  const amount = parseAmount($('movValue').value);
+  if(isNaN(amount) || amount<=0){ toast('Digite um valor válido'); $('movValue').focus(); return; }
+  const dStr = $('movDate').value || toKey(new Date());
+  const now = new Date();
+  const time = pad(now.getHours())+':'+pad(now.getMinutes());
+  const note = $('movNote').value.trim();
+
+  // valida a lógica: aporte sai do Livre em Real; resgate sai do Investido
+  if(type==='invest'){
+    const livre = livreRealAtual();
+    if(amount > livre + 0.005 && !confirm(`Você tem R$ ${fmtBRnum(livre)} livres em Real. Investir R$ ${fmtBRnum(amount)} mesmo assim? O Livre em Real ficará negativo.`)) return;
+  }
+  if(type==='redeem'){
+    if(amount > balances.investido + 0.005 && !confirm(`Você tem R$ ${fmtBRnum(balances.investido)} investidos. Resgatar R$ ${fmtBRnum(amount)} mesmo assim? O Investido ficará negativo.`)) return;
+  }
+  // aplica no saldo
+  if(type==='in_real')       balances.livreReal  += amount;
+  else if(type==='in_dolar') balances.livreDolar += amount;
+  else if(type==='invest'){  balances.livreReal  -= amount; balances.investido += amount; }
+  else if(type==='redeem'){  balances.investido  -= amount; balances.livreReal += amount; }
+
+  movements.push({
+    id: Date.now()+'-'+Math.random().toString(36).slice(2,7),
+    type, amount, date: dStr, time, note, createdAt: new Date().toISOString()
+  });
+  movements.sort((a,b)=>(b.date+b.time).localeCompare(a.date+a.time));
+  saveBal(); saveMov();
+  $('movValue').value=''; $('movNote').value=''; $('movDate').value=toKey(new Date());
+  render();
+  toast('Movimentação registrada');
+}
+function deleteMovement(id){
+  const m = movements.find(x=>x.id===id);
+  if(!m) return;
+  if(!confirm('Excluir esta movimentação? O saldo será ajustado de volta.')) return;
+  if(m.type==='in_real')       balances.livreReal  -= m.amount;
+  else if(m.type==='in_dolar') balances.livreDolar -= m.amount;
+  else if(m.type==='invest'){  balances.livreReal  += m.amount; balances.investido -= m.amount; }
+  else if(m.type==='redeem'){  balances.investido  += m.amount; balances.livreReal -= m.amount; }
+  movements = movements.filter(x=>x.id!==id);
+  saveBal(); saveMov(); render(); toast('Movimentação excluída');
+}
+function renderMovements(){
+  const list = $('movList'); if(!list) return;
+  const rows = movements.slice().sort((a,b)=>(b.date+b.time).localeCompare(a.date+a.time));
+  if(!rows.length){
+    list.innerHTML = `<div class="empty"><span class="serif">Sem movimentações</span>Registre aportes e entradas acima.</div>`;
+    return;
+  }
+  list.innerHTML = rows.map(m=>{
+    const meta = MOV_META[m.type] || MOV_META.in_real;
+    const val = meta.curr==='USD' ? usd(m.amount) : brl(m.amount);
+    const tagBg = meta.badge==='US$' ? '#E7EFF6' : '#F6EFD9';
+    const tagFg = meta.badge==='US$' ? '#3E7CB1' : '#C99A2E';
+    const tag = `<span style="background:${tagBg};color:${tagFg};font-weight:700;font-size:10px;padding:1px 6px;border-radius:6px;margin-left:6px">${meta.badge}</span>`;
+    return `<div class="tx">
+      <span class="txicon" style="background:${meta.color}">${meta.icon}</span>
+      <div class="txmid"><div class="txcat">${meta.title}</div><div class="txdt">${fmtBR(m.date)} · ${m.time} · ${meta.desc}${tag}</div>${m.note?`<div class="txnote">${esc(m.note)}</div>`:''}</div>
+      <span class="txamt num money" style="color:${meta.color}">${meta.sign}${val}</span>
+      <button class="txdel" data-id="${m.id}" title="Excluir">×</button>
+    </div>`;
+  }).join('');
+  list.querySelectorAll('.txdel').forEach(b=>{ b.onclick=()=>deleteMovement(b.dataset.id); });
 }
 
 /* ---------- wealth / patrimônio ---------- */
@@ -825,6 +957,9 @@ function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('sho
 /* ---------- events ---------- */
 $('addBtn').onclick=addExpenses;
 $('expInput').addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); addExpenses(); }});
+$('movBtn').onclick=addMovement;
+$('movValue').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); addMovement(); }});
+$('movNote').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); addMovement(); }});
 $('tabs').querySelectorAll('button').forEach(b=>{
   b.onclick=()=>{
     $('tabs').querySelectorAll('button').forEach(x=>x.classList.remove('on'));
@@ -919,6 +1054,7 @@ $('authForgot').onclick=async ()=>{
   const now=new Date();
   $('todayLabel').textContent = now.toLocaleDateString('pt-BR',{weekday:'long',day:'2-digit',month:'long'});
   $('dateInput').value = toKey(now);
+  $('movDate').value = toKey(now);
   const ms=new Date(now.getFullYear(),now.getMonth(),1);
   $('startDate').value=toKey(ms); $('endDate').value=toKey(now);
   await load();
