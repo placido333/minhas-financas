@@ -856,11 +856,11 @@ function renderWealth(){
   const livreDinBRL = livreD * rate;
   const total = invest + livreR + livreDinBRL;
 
-  // patrimônio no centro da rosca: sem centavos e com fonte que se ajusta (cabe milhões)
-  const totalStr = total.toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0});
+  // patrimônio no centro da rosca: com centavos e fonte que se ajusta (cabe milhões)
+  const totalStr = brl(total);
   const wt = $('wealthTotal');
   wt.textContent = totalStr;
-  wt.style.fontSize = totalStr.length>13 ? '17px' : totalStr.length>11 ? '20px' : totalStr.length>9 ? '23px' : '26px';
+  wt.style.fontSize = totalStr.length>14 ? '16px' : totalStr.length>12 ? '19px' : totalStr.length>10 ? '22px' : '26px';
 
   // donut sized in R$ equivalent; negatives clamped to 0 for the slice
   const slices = [
@@ -1094,6 +1094,24 @@ $('movType').onchange=updateMovPlaceholder;
 $('rateRefresh').onclick=()=>fetchRate(true);
 $('movValue').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); addMovement(); }});
 $('movNote').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); addMovement(); }});
+
+/* ---- separação automática de milhares enquanto digita (vírgula = centavos) ---- */
+function formatThousandsInput(el){
+  const neg = /^\s*-/.test(el.value);
+  let v = el.value.replace(/[^\d,]/g,'');     // mantém só dígitos e vírgula
+  const ci = v.indexOf(',');
+  let intPart, decPart = null;
+  if(ci!==-1){ intPart = v.slice(0,ci); decPart = v.slice(ci+1).replace(/,/g,'').slice(0,2); }
+  else { intPart = v; }
+  intPart = intPart.replace(/^0+(?=\d)/,'');
+  if(intPart==='' && decPart!==null) intPart = '0';
+  intPart = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, '.');   // pontos de milhar
+  let out = intPart + (decPart!==null ? (','+decPart) : '');
+  el.value = (neg?'-':'') + out;
+}
+['inInvest','inLivreR','inLivreD','inRate','movValue'].forEach(id=>{
+  const el=$(id); if(el) el.addEventListener('input', ()=>formatThousandsInput(el));
+});
 $('tabs').querySelectorAll('button').forEach(b=>{
   b.onclick=()=>{
     $('tabs').querySelectorAll('button').forEach(x=>x.classList.remove('on'));
