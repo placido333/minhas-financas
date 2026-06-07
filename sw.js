@@ -2,7 +2,7 @@
    Estratégia: network-first (sempre tenta a versão mais nova quando online;
    usa o cache só quando estiver offline). Assim, atualizações aparecem sozinhas.
    IMPORTANTE: ao mudar o app, troque o número da VERSION abaixo (v1 -> v2 ...). */
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = 'financas-' + VERSION;
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
@@ -21,6 +21,9 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
+  // Não interferir nos servidores do Firebase (login/banco em tempo real): deixa o navegador cuidar.
+  const host = new URL(e.request.url).hostname;
+  if (/googleapis\.com$/.test(host) && host !== 'fonts.googleapis.com') return;
   e.respondWith(
     fetch(e.request)
       .then((res) => {

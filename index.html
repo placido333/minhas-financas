@@ -168,6 +168,24 @@
   .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(140%);background:var(--ink);color:var(--paper);padding:13px 22px;border-radius:12px;font-weight:600;font-size:14px;box-shadow:0 10px 30px rgba(0,0,0,.2);transition:transform .3s cubic-bezier(.2,.8,.2,1);z-index:50}
   .toast.show{transform:translateX(-50%) translateY(0)}
 
+  /* Sync / nuvem */
+  .syncbtn{display:inline-flex;align-items:center;gap:7px;height:42px;padding:0 14px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-family:inherit;font-weight:700;font-size:13px;cursor:pointer;box-shadow:var(--shadow);transition:.15s}
+  .syncbtn:hover{border-color:var(--ink)}
+  .syncbtn.on{border-color:var(--emerald);color:var(--emerald);background:var(--emerald-soft)}
+  .syncbtn svg{width:18px;height:18px;flex:none}
+  .modal-bg{position:fixed;inset:0;background:rgba(22,21,15,.45);display:none;align-items:center;justify-content:center;padding:20px;z-index:60}
+  .modal-bg.show{display:flex}
+  .modal{background:var(--surface);border:1px solid var(--line);border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,.25);padding:24px;width:100%;max-width:380px}
+  .modal h3{font-family:"Fraunces";font-weight:500;font-size:22px;letter-spacing:-.01em;margin-bottom:6px}
+  .modal p.sub{color:var(--muted);font-size:13px;margin-bottom:16px}
+  .modal input{width:100%;height:46px;border:1.5px solid var(--line);border-radius:11px;padding:0 13px;font-family:inherit;font-size:15px;background:var(--paper);color:var(--ink);margin-bottom:11px}
+  .modal input:focus{outline:none;border-color:var(--emerald);background:#fff}
+  .authmsg{min-height:18px;font-size:13px;color:var(--terra);font-weight:600;margin:2px 0 12px;line-height:1.35}
+  .authmsg.ok{color:var(--emerald)}
+  .modal .row{display:flex;gap:10px}
+  .modal .row .btn,.modal .row .ghost{flex:1;height:48px;padding:0 12px}
+  .authlink{display:block;width:100%;margin-top:14px;text-align:center}
+
   @media(max-width:880px){
     .cards{grid-template-columns:repeat(2,1fr)}
     .grid2{grid-template-columns:1fr}
@@ -188,7 +206,11 @@
         <p>Registre um gasto e acompanhe por dia, mês e categoria</p>
       </div>
     </div>
-    <div style="display:flex;align-items:center;gap:16px">
+    <div style="display:flex;align-items:center;gap:12px">
+      <button class="syncbtn" id="syncBtn" type="button" title="Entrar para sincronizar entre aparelhos">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19a4.5 4.5 0 0 0 .5-9 6 6 0 0 0-11.6-1.5A4 4 0 0 0 6 19z"/></svg>
+        <span class="sl">Entrar</span>
+      </button>
       <button class="eye" id="eyeBtn" title="Ocultar valores"></button>
       <div class="today">
         hoje é<b id="todayLabel">—</b>
@@ -299,6 +321,23 @@
   </div>
 </div>
 
+<!-- Login / sincronização -->
+<div class="modal-bg" id="authModal">
+  <div class="modal">
+    <h3>Entrar para sincronizar</h3>
+    <p class="sub">Use o mesmo e-mail e senha em todos os aparelhos para ver seus dados em qualquer lugar.</p>
+    <input id="authEmail" type="email" autocomplete="username" placeholder="seu@email.com" />
+    <input id="authPass" type="password" autocomplete="current-password" placeholder="senha (mín. 6 caracteres)" />
+    <div class="authmsg" id="authMsg"></div>
+    <div class="row">
+      <button class="btn" id="authIn">Entrar</button>
+      <button class="ghost" id="authUp">Criar conta</button>
+    </div>
+    <button class="linklike authlink" id="authForgot">Esqueci minha senha</button>
+    <button class="linklike authlink" id="authClose" style="color:var(--muted);margin-top:8px">Fechar</button>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -341,11 +380,103 @@ async function load(){
 async function save(){
   try{ await storage.set(STORE_KEY, JSON.stringify(transactions)); }
   catch(e){ toast('Não foi possível salvar'); }
+  cloudPush();
 }
 async function saveBal(){
   try{ await storage.set(BAL_KEY, JSON.stringify(balances)); }
   catch(e){ toast('Não foi possível salvar saldos'); }
+  cloudPush();
 }
+
+/* ---------- nuvem (Firebase): sincroniza entre aparelhos ---------- */
+/* O app funciona 100% local sem login. Ao entrar, os dados passam a
+   sincronizar via Firestore; o localStorage segue como cópia offline. */
+let cloudReady = false;        // login feito e 1ª sincronização concluída nesta sessão
+let initialMergeDone = false;  // já mesclamos dados locais + nuvem?
+let syncEmail = null;
+let lastSig = null;
+const BAL_DEFAULT = { investido:0, livreReal:0, livreDolar:0, rate:5.17 };
+
+function unionById(a, b){
+  const map = new Map();
+  (a||[]).concat(b||[]).forEach(t=>{ if(t && t.id!=null) map.set(t.id, t); });
+  return [...map.values()];
+}
+function sortTx(arr){ return arr.sort((x,y)=> (y.date+y.time).localeCompare(x.date+x.time)); }
+function remoteSig(data){ return data ? JSON.stringify({t:data.transactions||[], b:data.balances||null}) : 'none'; }
+function persistLocal(){
+  storage.set(STORE_KEY, JSON.stringify(transactions));
+  storage.set(BAL_KEY, JSON.stringify(balances));
+}
+function cloudPush(){
+  if(window.cloud && window.cloud.user && cloudReady){
+    window.cloud.push({ transactions, balances, updatedAt: new Date().toISOString() })
+      .catch(()=>{ /* offline: o Firestore reenvia ao reconectar */ });
+  }
+}
+function cloudErrPt(code){
+  const m = {
+    'auth/invalid-email':'E-mail inválido.',
+    'auth/missing-password':'Digite a senha.',
+    'auth/weak-password':'A senha precisa ter ao menos 6 caracteres.',
+    'auth/email-already-in-use':'Esse e-mail já tem conta. Toque em “Entrar”.',
+    'auth/invalid-credential':'E-mail ou senha incorretos.',
+    'auth/wrong-password':'E-mail ou senha incorretos.',
+    'auth/user-not-found':'Não achei conta com esse e-mail. Toque em “Criar conta”.',
+    'auth/too-many-requests':'Muitas tentativas. Aguarde um pouco e tente de novo.',
+    'auth/network-request-failed':'Sem conexão com a internet.',
+    'auth/operation-not-allowed':'O login por e-mail/senha ainda não foi ativado no Firebase.',
+    'auth/configuration-not-found':'O login por e-mail/senha ainda não foi ativado no Firebase.'
+  };
+  return m[code] || 'Não foi possível concluir. Tente de novo.';
+}
+function updateSyncBtn(){
+  const b = $('syncBtn'); if(!b) return;
+  const sl = b.querySelector('.sl');
+  if(window.cloud && window.cloud.user){
+    b.classList.add('on'); sl.textContent='Nuvem ✓';
+    b.title = 'Conta: '+(syncEmail||'')+' — toque para sair';
+  }else{
+    b.classList.remove('on'); sl.textContent='Entrar';
+    b.title = 'Entrar para sincronizar entre aparelhos';
+  }
+}
+
+window.addEventListener('cloud-ready', updateSyncBtn);
+window.addEventListener('cloud-fail', ()=>{ /* sem nuvem: segue só local */ });
+window.addEventListener('cloud-login', (e)=>{
+  initialMergeDone=false; cloudReady=false; lastSig=null;
+  syncEmail = e.detail && e.detail.email || null;
+  updateSyncBtn();
+  toast('Conectado. Sincronizando…');
+});
+window.addEventListener('cloud-logout', ()=>{
+  cloudReady=false; initialMergeDone=false; syncEmail=null; lastSig=null;
+  updateSyncBtn();
+});
+window.addEventListener('cloud-error', ()=>{ toast('Erro de sincronização. Verifique a internet.'); });
+window.addEventListener('cloud-data', (e)=>{
+  const { exists, data, pending } = e.detail;
+  const remoteTx = (exists && data && Array.isArray(data.transactions)) ? data.transactions : [];
+  if(!initialMergeDone){
+    // 1ª vez após login: junta o que está aqui com o que está na nuvem (nada se perde)
+    transactions = sortTx(unionById(transactions, remoteTx));
+    if(exists && data && data.balances) balances = Object.assign({}, BAL_DEFAULT, data.balances);
+    initialMergeDone = true; cloudReady = true;
+    lastSig = remoteSig(data);
+    persistLocal(); render();
+    if(!exists || transactions.length !== remoteTx.length) cloudPush(); // semeia/atualiza a nuvem
+    toast('Sincronizado ✓');
+  }else{
+    if(pending) return;                 // eco do que nós mesmos acabamos de gravar
+    const sig = remoteSig(data);
+    if(sig === lastSig) return;         // nada mudou de verdade
+    lastSig = sig;
+    transactions = sortTx(remoteTx.slice());
+    if(exists && data && data.balances) balances = Object.assign({}, BAL_DEFAULT, data.balances);
+    persistLocal(); render();
+  }
+});
 
 /* ---------- parsing ---------- */
 function parseAmount(raw){
@@ -720,6 +851,41 @@ function applyPrivacy(){
 async function savePriv(){ /* não persiste: sempre inicia oculto */ }
 $('eyeBtn').onclick=()=>{ privacy=!privacy; applyPrivacy(); };
 
+/* ---- login / nuvem ---- */
+function openAuth(){ $('authMsg').textContent=''; $('authMsg').classList.remove('ok'); $('authModal').classList.add('show'); $('authEmail').focus(); }
+function closeAuth(){ $('authModal').classList.remove('show'); $('authPass').value=''; }
+$('syncBtn').onclick=()=>{
+  if(!window.cloud || !window.cloud.ready){ toast('Conectando ao serviço… tente de novo em instantes'); return; }
+  if(window.cloud.user){
+    if(confirm('Sair da conta neste aparelho?\n\nSeus dados continuam salvos na nuvem e voltam assim que você entrar de novo.')){
+      window.cloud.signOut().then(()=>toast('Você saiu. Os dados ficam só neste aparelho.'));
+    }
+  }else{ openAuth(); }
+};
+$('authClose').onclick=closeAuth;
+$('authModal').onclick=(e)=>{ if(e.target===$('authModal')) closeAuth(); };
+async function doAuth(kind){
+  const email=$('authEmail').value.trim(), pass=$('authPass').value;
+  const msg=$('authMsg'); msg.classList.remove('ok');
+  if(!email){ msg.textContent='Digite seu e-mail.'; return; }
+  if(!pass || pass.length<6){ msg.textContent='A senha precisa ter ao menos 6 caracteres.'; return; }
+  msg.textContent='Aguarde…';
+  try{
+    if(kind==='in') await window.cloud.signIn(email,pass);
+    else await window.cloud.signUp(email,pass);
+    closeAuth();
+  }catch(err){ msg.textContent=cloudErrPt(err && err.code); }
+}
+$('authIn').onclick=()=>doAuth('in');
+$('authUp').onclick=()=>doAuth('up');
+$('authPass').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); doAuth('in'); }});
+$('authForgot').onclick=async ()=>{
+  const email=$('authEmail').value.trim(), msg=$('authMsg'); msg.classList.remove('ok');
+  if(!email){ msg.textContent='Digite seu e-mail primeiro.'; return; }
+  try{ await window.cloud.resetPass(email); msg.classList.add('ok'); msg.textContent='Enviamos um link de redefinição para seu e-mail.'; }
+  catch(err){ msg.textContent=cloudErrPt(err && err.code); }
+};
+
 /* ---------- init ---------- */
 (async function init(){
   const now=new Date();
@@ -729,6 +895,7 @@ $('eyeBtn').onclick=()=>{ privacy=!privacy; applyPrivacy(); };
   $('startDate').value=toKey(ms); $('endDate').value=toKey(now);
   await load();
   applyPrivacy();
+  updateSyncBtn();
   render();
 })();
 
@@ -736,4 +903,62 @@ $('eyeBtn').onclick=()=>{ privacy=!privacy; applyPrivacy(); };
 if('serviceWorker' in navigator && location.protocol.startsWith('http')){
   window.addEventListener('load', ()=> navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 }
+</script>
+
+<!-- ===== Nuvem (Firebase): login + sincronização entre aparelhos =====
+     Carrega só quando online. Se falhar, o app segue funcionando local. -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
+           signOut, sendPasswordResetEmail, setPersistence, browserLocalPersistence }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+  import { getFirestore, doc, setDoc, onSnapshot }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyBS35OWZhEPr2XP1fnA-HmrcxtcQm7tpCY",
+    authDomain: "minhas-financas-16dfc.firebaseapp.com",
+    projectId: "minhas-financas-16dfc",
+    storageBucket: "minhas-financas-16dfc.firebasestorage.app",
+    messagingSenderId: "346323752881",
+    appId: "1:346323752881:web:72b2ef0b056b544ed14f90"
+  };
+
+  try{
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    await setPersistence(auth, browserLocalPersistence).catch(()=>{});
+
+    let docRef = null, unsub = null;
+    window.cloud = {
+      ready: true, user: null,
+      signIn:  (e,p)=>signInWithEmailAndPassword(auth, e, p),
+      signUp:  (e,p)=>createUserWithEmailAndPassword(auth, e, p),
+      signOut: ()=>signOut(auth),
+      resetPass:(e)=>sendPasswordResetEmail(auth, e),
+      push:    (data)=> docRef ? setDoc(docRef, data) : Promise.resolve()
+    };
+    window.dispatchEvent(new Event('cloud-ready'));
+
+    onAuthStateChanged(auth, (user)=>{
+      if(unsub){ unsub(); unsub=null; }
+      window.cloud.user = user || null;
+      if(user){
+        docRef = doc(db, 'users', user.uid);
+        window.dispatchEvent(new CustomEvent('cloud-login', { detail:{ email:user.email } }));
+        unsub = onSnapshot(docRef,
+          (snap)=> window.dispatchEvent(new CustomEvent('cloud-data', { detail:{
+            exists: snap.exists(), data: snap.data()||null, pending: snap.metadata.hasPendingWrites
+          }})),
+          (err)=> window.dispatchEvent(new CustomEvent('cloud-error', { detail:{ code:err && err.code } }))
+        );
+      }else{
+        docRef = null;
+        window.dispatchEvent(new Event('cloud-logout'));
+      }
+    });
+  }catch(err){
+    window.dispatchEvent(new CustomEvent('cloud-fail', { detail:{ msg:String(err) } }));
+  }
 </script>
