@@ -8,6 +8,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Finanças">
 <link rel="apple-touch-icon" href="./icon-192.png">
+<link rel="icon" type="image/svg+xml" href="./icon.svg">
 <link rel="icon" type="image/png" href="./icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -41,7 +42,8 @@
   /* Header */
   header.top{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;flex-wrap:wrap;margin-bottom:24px}
   .brand{display:flex;align-items:center;gap:14px}
-  .mark{width:46px;height:46px;border-radius:13px;background:var(--grad);color:#fff;display:grid;place-items:center;font-family:"Montserrat";font-weight:700;font-size:24px;flex:none}
+  .mark{width:46px;height:46px;border-radius:13px;overflow:hidden;flex:none}
+  .mark img{width:100%;height:100%;display:block}
   .brand h1{font-family:"Montserrat";font-weight:500;font-size:28px;letter-spacing:-.01em;line-height:1}
   .brand p{color:var(--muted);font-size:13.5px;margin-top:4px}
   .today{text-align:right;color:var(--muted);font-size:13px}
@@ -218,7 +220,7 @@
 <div class="wrap">
   <header class="top">
     <div class="brand">
-      <div class="mark serif">$</div>
+      <div class="mark"><img src="./icon-192.png" alt="PA$" /></div>
       <div>
         <h1>Minhas Finanças</h1>
         <p>Registre um gasto e acompanhe por dia, mês e categoria</p>
