@@ -122,6 +122,7 @@
   .txmid{flex:1;min-width:0}
   .txcat{font-weight:600;font-size:14.5px;text-transform:capitalize;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .txdt{color:var(--muted);font-size:12px;margin-top:2px}
+  .txnote{color:var(--muted);font-size:12.5px;margin-top:3px;line-height:1.35;word-break:break-word}
   .txamt{font-weight:700;font-size:15px;white-space:nowrap}
   .txdel{border:none;background:none;color:#cfcabb;cursor:pointer;font-size:18px;line-height:1;padding:4px;border-radius:7px;transition:.12s}
   .txdel:hover{color:var(--red);background:var(--terra-soft)}
@@ -228,7 +229,7 @@
       <input id="dateInput" type="date" title="Data do gasto" />
       <button class="btn" id="addBtn">Registrar</button>
     </div>
-    <div class="hint">Formato: <code>Categoria - valor</code>. Use o sufixo <code>R</code> p/ Real ou <code>D</code> p/ Dólar — ex.: <code>Ifood - 101,50R</code> &nbsp;·&nbsp; <code>Uber 25D</code>. Sem sufixo, conta como Real. O gasto é descontado do seu <b>dinheiro livre</b>. A hora é registrada automaticamente; pode colar várias linhas.</div>
+    <div class="hint">Formato: <code>Categoria - valor</code>. Use o sufixo <code>R</code> p/ Real ou <code>D</code> p/ Dólar — ex.: <code>Ifood - 101,50R</code> &nbsp;·&nbsp; <code>Uber 25D</code>. Sem sufixo, conta como Real. <b>Observação opcional</b>: adicione mais um <code>-</code> no fim — ex.: <code>Airbnb - 1500 - SP (17/06 a 19/06)</code>. O gasto é descontado do seu <b>dinheiro livre</b>. A hora é registrada automaticamente; pode colar várias linhas.</div>
   </div>
 
   <!-- Metric cards -->
@@ -359,6 +360,7 @@ const $ = id => document.getElementById(id);
 const brl = n => n.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 const usd = n => n.toLocaleString('en-US',{style:'currency',currency:'USD'});
 const pad = n => String(n).padStart(2,'0');
+const esc = s => String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const toKey = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 
 /* ---------- storage (localStorage, com fallback em memória) ---------- */
@@ -486,10 +488,35 @@ function parseAmount(raw){
   else if((s.match(/\./g)||[]).length>1){ s = s.replace(/\./g,''); }  // 1.234.567
   return parseFloat(s);
 }
+// Lê só o campo do valor: "1.234,56", "101,50R", "R$ 50", "25D"...
+function parseValueField(s){
+  const vm = (s||'').trim().match(/^(?:R\$|\$)?\s*(-?\d[\d.,]*)\s*([rd])?\s*$/i);
+  if(!vm) return null;
+  const amount = parseAmount(vm[1]);
+  if(isNaN(amount) || amount<=0) return null;
+  return { amount, currency: (vm[2]||'').toUpperCase()==='D' ? 'USD' : 'BRL' };
+}
 function parseLine(line){
   const t = line.trim();
   if(!t) return null;
-  // amount = last numeric chunk, with optional R (Real) / D (Dólar) suffix
+  // Formato com observação opcional: "Categoria - valor - observação".
+  // Campos separados por " - "; a observação pode ter " - " dentro (é remontada).
+  const fields = t.split(/\s+[-–—]\s+/);
+  if(fields.length >= 2){
+    // (a) valor é o 2º campo: "Categoria - valor - observação"
+    let val = parseValueField(fields[1]);
+    if(val){
+      return { category: fields[0].trim() || 'Outros', amount: val.amount,
+               currency: val.currency, note: fields.slice(2).join(' - ').trim() };
+    }
+    // (b) valor colado na categoria: "Categoria valor - observação" (ex.: Uber 30D - aeroporto)
+    const m0 = fields[0].match(/^(.*?)\s+(\S+)$/);
+    if(m0 && (val = parseValueField(m0[2]))){
+      return { category: m0[1].trim() || 'Outros', amount: val.amount,
+               currency: val.currency, note: fields.slice(1).join(' - ').trim() };
+    }
+  }
+  // Formato antigo (compatível): valor = último número da linha, sem observação.
   const m = t.match(/(-?\s*(?:R\$|\$)?\s*[\d][\d.,]*)\s*([rdRD])?\s*$/i);
   if(!m) return null;
   const amount = parseAmount(m[1]);
@@ -498,7 +525,7 @@ function parseLine(line){
   const currency = suffix==='D' ? 'USD' : 'BRL';   // default Real
   let cat = t.slice(0, m.index).replace(/[-–—:|]+\s*$/,'').trim();
   if(!cat) cat = 'Outros';
-  return { category: cat, amount, currency };
+  return { category: cat, amount, currency, note: '' };
 }
 
 /* ---------- add ---------- */
@@ -522,6 +549,7 @@ function addExpenses(){
     transactions.push({
       id: Date.now()+'-'+Math.random().toString(36).slice(2,7),
       category: p.category, amount: p.amount, currency: p.currency,
+      note: p.note || '',
       date: dateKey, time, createdAt: new Date().toISOString()
     });
     added++;
@@ -764,7 +792,7 @@ function renderTx(inP){
         : `<span style="background:#F6EFD9;color:#C99A2E;font-weight:700;font-size:10px;padding:1px 6px;border-radius:6px;margin-left:6px">R$</span>`;
       return `<div class="tx">
         <span class="txicon" style="background:${PALETTE[idx]}">${t.category.trim()[0]||'?'}</span>
-        <div class="txmid"><div class="txcat">${t.category}</div><div class="txdt">${fmtBR(t.date)} · ${t.time}${tag}</div></div>
+        <div class="txmid"><div class="txcat">${t.category}</div><div class="txdt">${fmtBR(t.date)} · ${t.time}${tag}</div>${t.note?`<div class="txnote">${esc(t.note)}</div>`:''}</div>
         <span class="txamt num money" style="${isUSD?'color:#3E7CB1':''}">${amt}</span>
         <button class="txdel" data-id="${t.id}" title="Excluir">×</button>
       </div>`;
@@ -780,9 +808,9 @@ function hash(s){ let h=0; for(let i=0;i<s.length;i++){ h=(h<<5)-h+s.charCodeAt(
 /* ---------- export ---------- */
 function exportCSV(){
   if(!transactions.length){ toast('Nada para exportar'); return; }
-  const rows=[['Data','Hora','Categoria','Valor','Moeda']];
+  const rows=[['Data','Hora','Categoria','Valor','Moeda','Observação']];
   transactions.slice().sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time))
-    .forEach(t=>rows.push([t.date,t.time,t.category,String(t.amount).replace('.',','),currencyOf(t)==='USD'?'USD':'BRL']));
+    .forEach(t=>rows.push([t.date,t.time,t.category,String(t.amount).replace('.',','),currencyOf(t)==='USD'?'USD':'BRL',t.note||'']));
   const csv=rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(';')).join('\n');
   const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'});
   const a=document.createElement('a');
