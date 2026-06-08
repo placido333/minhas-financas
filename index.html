@@ -246,6 +246,7 @@
       </div>
       <input id="dateInput" type="date" title="Data do gasto" />
       <button class="btn" id="addBtn">Registrar</button>
+      <button class="ghost" id="expCancelEdit" type="button" style="display:none;height:52px">Cancelar</button>
     </div>
     <div class="hint">Formato: <code>Categoria - valor</code>. Use o sufixo <code>R</code> p/ Real ou <code>D</code> p/ Dólar — ex.: <code>Ifood - 101,50R</code> &nbsp;·&nbsp; <code>Uber 25D</code>. Sem sufixo, conta como Real. <b>Observação opcional</b>: adicione mais um <code>-</code> no fim — ex.: <code>Airbnb - 1500 - SP (17/06 a 19/06)</code>. O gasto é descontado do seu <b>dinheiro livre</b>. A hora é registrada automaticamente; pode colar várias linhas.</div>
   </div>
@@ -598,11 +599,45 @@ function parseLine(line){
 }
 
 /* ---------- add ---------- */
+let editingTxId = null;
+function startEditTx(id){
+  const t = transactions.find(x=>x.id===id); if(!t) return;
+  editingTxId = id;
+  const suffix = currencyOf(t)==='USD' ? 'D' : '';        // BRL = sem sufixo
+  let line = t.category + ' - ' + fmtBRnum(t.amount) + suffix;
+  if(t.note) line += ' - ' + t.note;
+  $('expInput').value = line;
+  $('dateInput').value = t.date;
+  $('addBtn').textContent = 'Salvar alteração';
+  $('expCancelEdit').style.display = '';
+  document.querySelector('.addcard').scrollIntoView({block:'center'});
+  $('expInput').focus();
+}
+function cancelEditTx(){
+  editingTxId = null;
+  $('addBtn').textContent = 'Registrar';
+  $('expCancelEdit').style.display = 'none';
+  $('expInput').value = '';
+  $('dateInput').value = toKey(new Date());
+}
 function addExpenses(){
   const text = $('expInput').value;
   if(!text.trim()){ $('expInput').focus(); return; }
   const dStr = $('dateInput').value;
   const now = new Date();
+
+  if(editingTxId){
+    const p = parseLine(text);
+    if(!p){ toast('Não entendi o formato. Use: Categoria - valor'); return; }
+    const t = transactions.find(x=>x.id===editingTxId);
+    if(!t){ cancelEditTx(); return; }
+    t.category=p.category; t.amount=p.amount; t.currency=p.currency; t.note=p.note||'';
+    if(dStr) t.date=dStr;
+    transactions.sort((a,b)=> (b.date+b.time).localeCompare(a.date+a.time));
+    cancelEditTx(); save(); render(); toast('Lançamento atualizado');
+    return;
+  }
+
   let added = 0;
   text.split('\n').forEach(line=>{
     const p = parseLine(line);
@@ -1053,15 +1088,18 @@ function renderTx(inP){
       const tag = isUSD
         ? `<span style="background:#E7EFF6;color:#3E7CB1;font-weight:700;font-size:10px;padding:1px 6px;border-radius:6px;margin-left:6px">US$</span>`
         : `<span style="background:#F6EFD9;color:#C99A2E;font-weight:700;font-size:10px;padding:1px 6px;border-radius:6px;margin-left:6px">R$</span>`;
-      return `<div class="tx">
+      const sel = t.id===editingTxId ? ' style="background:var(--emerald-soft);border-radius:11px"' : '';
+      return `<div class="tx"${sel}>
         <span class="txicon" style="background:${PALETTE[idx]}">${t.category.trim()[0]||'?'}</span>
         <div class="txmid"><div class="txcat">${t.category}</div><div class="txdt">${fmtBR(t.date)} · ${t.time}${tag}</div>${t.note?`<div class="txnote">${esc(t.note)}</div>`:''}</div>
         <span class="txamt num money" style="${isUSD?'color:#3E7CB1':''}">${amt}</span>
+        <button class="txedit" data-id="${t.id}" title="Editar">✎</button>
         <button class="txdel" data-id="${t.id}" title="Excluir">×</button>
       </div>`;
     }).join('');
+    list.querySelectorAll('.txedit').forEach(b=>{ b.onclick=()=>startEditTx(b.dataset.id); });
     list.querySelectorAll('.txdel').forEach(b=>{
-      b.onclick=()=>{ transactions=transactions.filter(x=>x.id!==b.dataset.id); save(); render(); toast('Lançamento excluído'); };
+      b.onclick=()=>{ transactions=transactions.filter(x=>x.id!==b.dataset.id); if(editingTxId===b.dataset.id) cancelEditTx(); save(); render(); toast('Lançamento excluído'); };
     });
   }
   const cc=$('clearCat'); if(cc) cc.onclick=()=>{ selectedCat=null; render(); };
@@ -1087,6 +1125,7 @@ function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('sho
 
 /* ---------- events ---------- */
 $('addBtn').onclick=addExpenses;
+$('expCancelEdit').onclick=cancelEditTx;
 $('expInput').addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); addExpenses(); }});
 $('movBtn').onclick=addMovement;
 $('movCancelEdit').onclick=resetMovForm;
