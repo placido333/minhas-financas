@@ -292,16 +292,18 @@
   <!-- Aportes, entradas e resgates -->
   <div class="panel mb">
     <div class="panel-head"><h2>Aportes e entradas</h2></div>
-    <div class="hint" style="margin:0 0 12px">Registre dinheiro que <b>entrou</b> no seu Livre, um <b>aporte</b> (tira do Livre em Real e coloca no Investido) ou o <b>rendimento</b> (atualize todo dia 1 quanto o investido virou). Cada registro guarda a data. Para investir, o valor precisa estar antes no <b>Livre em Real</b>.</div>
+    <div class="hint" style="margin:0 0 12px">Registre dinheiro que <b>entrou</b> no seu Livre, um <b>aporte</b>, o <b>rendimento</b> (atualize todo dia 1 quanto o investido virou) ou uma <b>conversão Dólar→Real</b> (informe quanto saiu em US$ e quanto caiu em R$). Cada registro guarda a data.</div>
     <div class="movform">
       <select id="movType" class="movsel">
         <option value="in_real">Entrada · Livre em Real (R$)</option>
         <option value="in_dolar">Entrada · Livre em Dólar (US$)</option>
         <option value="invest">Aporte · investir (Livre R$ → Investido)</option>
         <option value="redeem">Resgate · desinvestir (Investido → Livre R$)</option>
+        <option value="convert">Conversão · Dólar → Real (US$ → R$)</option>
         <option value="yield">Rendimento · atualizar investido</option>
       </select>
       <input id="movValue" class="movval" inputmode="decimal" autocomplete="off" placeholder="valor (ex.: 1.000,00)">
+      <input id="movValue2" class="movval" inputmode="decimal" autocomplete="off" placeholder="entrou em real (R$)" style="display:none">
       <input id="movDate" type="date" class="movdate" title="Data da movimentação">
       <input id="movNote" class="movnote" autocomplete="off" placeholder="observação (opcional)">
       <button class="btn" id="movBtn">Registrar</button>
@@ -394,6 +396,7 @@ const MOV_META = {
   in_dolar: { title:'Entrada em Dólar', color:'#3E7CB1', badge:'US$', icon:'+', sign:'+ ', curr:'USD', desc:'entrou no Livre em Dólar' },
   invest:   { title:'Aporte',           color:'#C99A2E', badge:'R$',  icon:'↑', sign:'',   curr:'BRL', desc:'Livre em Real → Investido' },
   redeem:   { title:'Resgate',          color:'#D97742', badge:'R$',  icon:'↓', sign:'',   curr:'BRL', desc:'Investido → Livre em Real' },
+  convert:  { title:'Conversão',        color:'#3BB273', badge:'R$',  icon:'⇄', sign:'+ ', curr:'BRL', desc:'Dólar → Real' },
   yield:    { title:'Rendimento',       color:'#22B8A0', badge:'R$',  icon:'↗', sign:'',   curr:'BRL', desc:'rendimento do investido' }
 };
 
@@ -710,15 +713,20 @@ function livreRealAtual(){
   const spentBRL = transactions.filter(t=>currencyOf(t)==='BRL').reduce((s,t)=>s+t.amount,0);
   return balances.livreReal - spentBRL;
 }
+function livreDolarAtual(){
+  const spentUSD = transactions.filter(t=>currencyOf(t)==='USD').reduce((s,t)=>s+t.amount,0);
+  return balances.livreDolar - spentUSD;
+}
 function fmtBRnum(n){ return n.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
 // aplica (sign=+1) ou reverte (sign=-1) o efeito de um movimento no saldo
-function applyMovEffect(type, amount, sign){
+function applyMovEffect(type, amount, sign, amountIn){
   const a = amount * sign;
   if(type==='in_real')       balances.livreReal  += a;
   else if(type==='in_dolar') balances.livreDolar += a;
   else if(type==='invest'){  balances.livreReal  -= a; balances.investido += a; }
   else if(type==='redeem'){  balances.investido  -= a; balances.livreReal += a; }
   else if(type==='yield'){   balances.investido  += a; balances.rendimentos = (balances.rendimentos||0) + a; } // rendimento: só cresce o investido (não sai do livre)
+  else if(type==='convert'){ balances.livreDolar -= a; balances.livreReal += (amountIn||0)*sign; }            // saiu US$, entrou R$ (valor informado)
 }
 // lê valor com sinal (permite negativo, ex.: rendimento de mês em queda)
 function parseSignedAmount(s){
@@ -735,34 +743,45 @@ function validateMov(type, amount){
   }
   if(type==='redeem' && amount > balances.investido + 0.005
      && !confirm(`Você tem R$ ${fmtBRnum(balances.investido)} investidos. Resgatar R$ ${fmtBRnum(amount)} mesmo assim? O Investido ficará negativo.`)) return false;
+  if(type==='convert'){
+    const livreD = livreDolarAtual();
+    if(amount > livreD + 0.005 && !confirm(`Você tem US$ ${fmtBRnum(livreD)} livres em Dólar. Converter US$ ${fmtBRnum(amount)} mesmo assim? O Livre em Dólar ficará negativo.`)) return false;
+  }
   return true;
 }
 function updateMovPlaceholder(){
   const t = $('movType').value;
   const editing = editingMovId ? movements.find(x=>x.id===editingMovId) : null;
+  const v2 = $('movValue2');
   if(t==='yield'){
     $('movValue').placeholder = (editing && editing.type==='yield') ? 'rendimento (ex.: 3.000)' : 'novo total do investido (ex.: 103.000)';
+    v2.style.display='none';
+  }else if(t==='convert'){
+    $('movValue').placeholder = 'saiu em dólar (ex.: 600)';
+    v2.style.display='';                         // mostra o 2º campo (R$ que entrou)
   }else{
     $('movValue').placeholder = 'valor (ex.: 1.000,00)';
+    v2.style.display='none';
   }
 }
 function resetMovForm(){
   editingMovId = null;
   $('movBtn').textContent = 'Registrar';
   $('movCancelEdit').style.display = 'none';
-  $('movValue').value=''; $('movNote').value=''; $('movDate').value=toKey(new Date());
+  $('movValue').value=''; $('movValue2').value=''; $('movNote').value=''; $('movDate').value=toKey(new Date());
   updateMovPlaceholder();
 }
 function startEditMovement(id){
   const m = movements.find(x=>x.id===id); if(!m) return;
   editingMovId = id;
   $('movType').value = m.type;
-  $('movValue').value = fmtBRnum(m.amount);   // p/ rendimento, mostra o próprio rendimento (delta)
+  $('movValue').value = fmtBRnum(m.amount);   // p/ rendimento, mostra o próprio rendimento (delta); p/ conversão, o US$ que saiu
   $('movDate').value = m.date;
   $('movNote').value = m.note || '';
   $('movBtn').textContent = 'Salvar alteração';
   $('movCancelEdit').style.display = '';
   updateMovPlaceholder();
+  if(m.type==='convert') $('movValue2').value = fmtBRnum(m.amountIn||0);  // R$ que entrou
   document.querySelector('.movform').scrollIntoView({block:'center'});
   $('movValue').focus();
 }
@@ -772,12 +791,12 @@ function addMovement(){
   const note = $('movNote').value.trim();
   const raw  = $('movValue').value;
   const editing = editingMovId ? movements.find(x=>x.id===editingMovId) : null;
-  const undo = () => { if(editing) applyMovEffect(editing.type, editing.amount, +1); }; // restaura se cancelar
+  const undo = () => { if(editing) applyMovEffect(editing.type, editing.amount, +1, editing.amountIn); }; // restaura se cancelar
 
-  if(editing) applyMovEffect(editing.type, editing.amount, -1); // reverte o antigo antes de calcular/validar
+  if(editing) applyMovEffect(editing.type, editing.amount, -1, editing.amountIn); // reverte o antigo antes de calcular/validar
 
   // calcula o valor a aplicar conforme o tipo
-  let amount;
+  let amount, amountIn;
   if(type==='yield'){
     if(editing && editing.type==='yield'){
       amount = parseSignedAmount(raw);                 // editar rendimento: campo = rendimento (pode ser negativo)
@@ -787,19 +806,25 @@ function addMovement(){
       amount = novoTotal - balances.investido;         // delta = rendimento (saldo já está sem o efeito antigo)
     }
     if(isNaN(amount) || Math.abs(amount)<0.005){ undo(); toast(isNaN(amount)?'Valor inválido':'O montante não mudou.'); return; }
+  }else if(type==='convert'){
+    amount   = parseAmount(raw);                        // US$ que saiu
+    amountIn = parseAmount($('movValue2').value);       // R$ que entrou
+    if(isNaN(amount) || amount<=0){ undo(); toast('Digite quanto saiu em dólar'); $('movValue').focus(); return; }
+    if(isNaN(amountIn) || amountIn<=0){ undo(); toast('Digite quanto entrou em real'); $('movValue2').focus(); return; }
+    if(!validateMov(type, amount)){ undo(); return; }
   }else{
     amount = parseAmount(raw);
     if(isNaN(amount) || amount<=0){ undo(); toast('Digite um valor válido'); $('movValue').focus(); return; }
     if(!validateMov(type, amount)){ undo(); return; }
   }
 
-  applyMovEffect(type, amount, +1);
+  applyMovEffect(type, amount, +1, amountIn);
   if(editing){
-    editing.type=type; editing.amount=amount; editing.date=dStr; editing.note=note;
+    editing.type=type; editing.amount=amount; editing.amountIn=amountIn; editing.date=dStr; editing.note=note;
   }else{
     const now = new Date();
     movements.push({ id: Date.now()+'-'+Math.random().toString(36).slice(2,7),
-      type, amount, date: dStr, time: pad(now.getHours())+':'+pad(now.getMinutes()),
+      type, amount, amountIn, date: dStr, time: pad(now.getHours())+':'+pad(now.getMinutes()),
       note, createdAt: new Date().toISOString() });
   }
   movements.sort((a,b)=>(b.date+b.time).localeCompare(a.date+a.time));
@@ -809,7 +834,7 @@ function deleteMovement(id){
   const m = movements.find(x=>x.id===id);
   if(!m) return;
   if(!confirm('Excluir esta movimentação? O saldo será ajustado de volta.')) return;
-  applyMovEffect(m.type, m.amount, -1);
+  applyMovEffect(m.type, m.amount, -1, m.amountIn);
   movements = movements.filter(x=>x.id!==id);
   if(editingMovId===id) resetMovForm();
   saveBal(); saveMov(); render(); toast('Movimentação excluída');
@@ -823,9 +848,11 @@ function renderMovements(){
   }
   list.innerHTML = rows.map(m=>{
     const meta = MOV_META[m.type] || MOV_META.in_real;
+    const isConvert = m.type==='convert';
     const negative = m.amount < 0;                       // rendimento pode ser negativo (mês em queda)
     const amtAbs = Math.abs(m.amount);
-    const val = meta.curr==='USD' ? usd(amtAbs) : brl(amtAbs);
+    const val = isConvert ? brl(m.amountIn||0) : (meta.curr==='USD' ? usd(amtAbs) : brl(amtAbs));
+    const desc = isConvert ? `saiu US$ ${fmtBRnum(m.amount)} → entrou em Real` : meta.desc;
     const color = negative ? 'var(--red)' : meta.color;
     const sign = m.type==='yield' ? (negative ? '− ' : '+ ') : meta.sign;
     const icon = (m.type==='yield' && negative) ? '↘' : meta.icon;
@@ -835,7 +862,7 @@ function renderMovements(){
     const sel = m.id===editingMovId ? ' style="background:var(--emerald-soft);border-radius:11px"' : '';
     return `<div class="tx"${sel}>
       <span class="txicon" style="background:${color}">${icon}</span>
-      <div class="txmid"><div class="txcat">${meta.title}</div><div class="txdt">${fmtBR(m.date)} · ${m.time} · ${meta.desc}${tag}</div>${m.note?`<div class="txnote">${esc(m.note)}</div>`:''}</div>
+      <div class="txmid"><div class="txcat">${meta.title}</div><div class="txdt">${fmtBR(m.date)} · ${m.time} · ${desc}${tag}</div>${m.note?`<div class="txnote">${esc(m.note)}</div>`:''}</div>
       <span class="txamt num money" style="color:${color}">${sign}${val}</span>
       <button class="txedit" data-id="${m.id}" title="Editar">✎</button>
       <button class="txdel" data-id="${m.id}" title="Excluir">×</button>
@@ -1132,6 +1159,7 @@ $('movCancelEdit').onclick=resetMovForm;
 $('movType').onchange=updateMovPlaceholder;
 $('rateRefresh').onclick=()=>fetchRate(true);
 $('movValue').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); addMovement(); }});
+$('movValue2').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); addMovement(); }});
 $('movNote').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); addMovement(); }});
 
 /* ---- separação automática de milhares enquanto digita (vírgula = centavos) ---- */
@@ -1148,7 +1176,7 @@ function formatThousandsInput(el){
   let out = intPart + (decPart!==null ? (','+decPart) : '');
   el.value = (neg?'-':'') + out;
 }
-['inInvest','inLivreR','inLivreD','inRate','movValue'].forEach(id=>{
+['inInvest','inLivreR','inLivreD','inRate','movValue','movValue2'].forEach(id=>{
   const el=$(id); if(el) el.addEventListener('input', ()=>formatThousandsInput(el));
 });
 $('tabs').querySelectorAll('button').forEach(b=>{

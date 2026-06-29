@@ -2,7 +2,7 @@
    Estratégia: network-first (sempre tenta a versão mais nova quando online;
    usa o cache só quando estiver offline). Assim, atualizações aparecem sozinhas.
    IMPORTANTE: ao mudar o app, troque o número da VERSION abaixo (v1 -> v2 ...). */
-const VERSION = 'v13';
+const VERSION = 'v14';
 const CACHE = 'financas-' + VERSION;
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './logo-mark.png', './icon-192.png', './icon-512.png'];
 
